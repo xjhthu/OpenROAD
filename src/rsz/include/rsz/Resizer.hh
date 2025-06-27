@@ -264,6 +264,8 @@ class Resizer : public dbStaState, public dbNetworkObserver
   float targetLoadCap(LibertyCell* cell);
 
   ////////////////////////////////////////////////////////////////
+  bool simpleSizing(double repair_tns_end_percent,
+                   int max_passes);
   bool repairSetup(double setup_margin,
                    double repair_tns_end_percent,
                    int max_passes,

@@ -102,6 +102,8 @@ class RepairSetup : public sta::dbStaState
                    bool skip_buffering,
                    bool skip_buffer_removal,
                    bool skip_last_gasp);
+  bool simpleSizing(const double repair_tns_end_percent,
+                    const int max_passes);
   // For testing.
   void repairSetup(const Pin* end_pin);
   // For testing.
@@ -112,6 +114,8 @@ class RepairSetup : public sta::dbStaState
 
  private:
   void init();
+  bool simpleRepairPath(Path* path,
+                  Slack path_slack);
   bool repairPath(Path* path,
                   Slack path_slack,
                   bool skip_pin_swap,
@@ -149,6 +153,10 @@ class RepairSetup : public sta::dbStaState
                                float delay_adjust,
                                SlackEstimatorParams params,
                                bool accept_if_slack_improves);
+  double calcUpsizeDrvr(const Path* drvr_path,
+                  int drvr_index,
+                  PathExpanded* expanded,
+                  LibertyCell* &upsize);
   bool upsizeDrvr(const Path* drvr_path,
                   int drvr_index,
                   PathExpanded* expanded);
@@ -163,6 +171,13 @@ class RepairSetup : public sta::dbStaState
                   int drvr_index,
                   Slack drvr_slack,
                   PathExpanded* expanded);
+  float estimateLeakagePower(LibertyCell* cell);
+  double calcUpsizeCell(LibertyPort* in_port,
+                          LibertyPort* drvr_port,
+                          float load_cap,
+                          float prev_drive,
+                          const DcalcAnalysisPt* dcalc_ap,
+                          LibertyCell* &upsizeTarget);
   LibertyCell* upsizeCell(LibertyPort* in_port,
                           LibertyPort* drvr_port,
                           float load_cap,

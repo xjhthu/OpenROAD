@@ -4077,6 +4077,20 @@ void Resizer::cloneClkInverter(Instance* inv)
 
 ////////////////////////////////////////////////////////////////
 
+bool Resizer::simpleSizing(double repair_tns_end_percent,
+                          int max_passes)
+{
+  utl::SetAndRestore set_match_footprint(match_cell_footprint_,
+                                         false);
+  resizePreamble();
+  if (parasitics_src_ == ParasiticsSrc::global_routing
+      || parasitics_src_ == ParasiticsSrc::detailed_routing) {
+    opendp_->initMacrosAndGrid();
+  }
+  return repair_setup_->simpleSizing(repair_tns_end_percent,
+                                    max_passes);
+}
+
 bool Resizer::repairSetup(double setup_margin,
                           double repair_tns_end_percent,
                           int max_passes,

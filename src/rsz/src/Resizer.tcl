@@ -509,6 +509,104 @@ proc repair_tie_fanout { args } {
   }
 }
 
+sta::define_cmd_args "simple_sizing" {[-setup] [-hold]\
+                                        [-recover_power percent_of_paths_with_slack]\
+                                        [-setup_margin setup_margin]\
+                                        [-hold_margin hold_margin]\
+                                        [-slack_margin slack_margin]\
+                                        [-libraries libs]\
+                                        [-allow_setup_violations]\
+                                        [-skip_pin_swap]\
+                                        [-skip_gate_cloning]\
+                                        [-skip_buffering]\
+                                        [-skip_buffer_removal]\
+                                        [-skip_last_gasp]\
+                                        [-repair_tns tns_end_percent]\
+                                        [-max_passes passes]\
+                                        [-max_buffer_percent buffer_percent]\
+                                        [-max_utilization util] \
+                                        [-match_cell_footprint] \
+                                        [-max_repairs_per_pass max_repairs_per_pass]\
+                                        [-verbose]}
+
+proc simple_sizing { args } {
+  sta::parse_key_args "repair_timing" args \
+    keys {-setup_margin -hold_margin -slack_margin \
+            -libraries -max_utilization -max_buffer_percent \
+            -recover_power -repair_tns -max_passes -max_repairs_per_pass} \
+    flags {-setup -hold -allow_setup_violations -skip_pin_swap -skip_gate_cloning \
+           -skip_buffering -skip_buffer_removal -skip_last_gasp -match_cell_footprint \
+           -verbose}
+
+  set setup [info exists flags(-setup)]
+  set hold [info exists flags(-hold)]
+  if { !$setup && !$hold } {
+    set setup 1
+    set hold 1
+  }
+
+  
+  set setup_margin [rsz::parse_time_margin_arg "-setup_margin" keys]
+  set hold_margin [rsz::parse_time_margin_arg "-hold_margin" keys]
+  
+
+  set allow_setup_violations [info exists flags(-allow_setup_violations)]
+  set skip_pin_swap [info exists flags(-skip_pin_swap)]
+  set skip_gate_cloning [info exists flags(-skip_gate_cloning)]
+  set skip_buffering [info exists flags(-skip_buffering)]
+  set skip_buffer_removal [info exists flags(-skip_buffer_removal)]
+  set skip_last_gasp [info exists flags(-skip_last_gasp)]
+  rsz::set_max_utilization [rsz::parse_max_util keys]
+
+  set max_buffer_percent 20
+  if { [info exists keys(-max_buffer_percent)] } {
+    set max_buffer_percent $keys(-max_buffer_percent)
+    sta::check_percent "-max_buffer_percent" $max_buffer_percent
+  }
+  set max_buffer_percent [expr $max_buffer_percent / 100.0]
+
+  set repair_tns_end_percent 1.0
+  if { [info exists keys(-repair_tns)] } {
+    set repair_tns_end_percent $keys(-repair_tns)
+    sta::check_percent "-repair_tns" $repair_tns_end_percent
+    set repair_tns_end_percent [expr $repair_tns_end_percent / 100.0]
+  }
+
+  set recover_power_percent -1
+  if { [info exists keys(-recover_power)] } {
+    set recover_power_percent $keys(-recover_power)
+    sta::check_percent "-recover_power" $recover_power_percent
+    set recover_power_percent [expr $recover_power_percent / 100.0]
+  }
+
+  set verbose 0
+  if { [info exists flags(-verbose)] } {
+    set verbose 1
+  }
+
+  set max_passes 10000
+  if { [info exists keys(-max_passes)] } {
+    set max_passes $keys(-max_passes)
+  }
+
+  set match_cell_footprint [info exists flags(-match_cell_footprint)]
+  if { [design_is_routed] } {
+    rsz::set_parasitics_src "detailed_routing"
+  }
+
+  set max_repairs_per_pass 1
+  if { [info exists keys(-max_repairs_per_pass)] } {
+    set max_repairs_per_pass $keys(-max_repairs_per_pass)
+  }
+
+  sta::check_argc_eq0 "simple_sizing" $args
+  rsz::check_parasitics
+
+  set upsized 0
+  set upsized [rsz::simpleSizing $repair_tns_end_percent $max_passes]
+
+  return [expr $upsized]
+}
 
 # -max_passes is for developer debugging so intentionally not documented
 # in define_cmd_args

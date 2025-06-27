@@ -504,6 +504,16 @@ repair_net_cmd(Net *net,
 }
 
 bool
+simpleSizing(double repair_tns_end_percent,
+             int max_passes)
+{
+  ensureLinked();
+  Resizer *resizer = getResizer();
+  return resizer->simpleSizing(repair_tns_end_percent,
+                       max_passes);
+}
+
+bool
 repair_setup(double setup_margin,
              double repair_tns_end_percent,
              int max_passes,
