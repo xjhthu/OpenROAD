@@ -531,7 +531,6 @@ bool RepairSetup::simpleRepairPath(Path* path,
   PathExpanded expanded(path, sta_);
   int changed=0;
   if (expanded.size() > 1){
-    std::cout<<"path"<<std::endl;
     const int path_length = expanded.size();
     vector<pair<pair<int, LibertyCell*>, double>> ratio_delays;
     const int start_index = expanded.startIndex();
@@ -547,7 +546,6 @@ bool RepairSetup::simpleRepairPath(Path* path,
         LibertyCell* upsize_target;
         double upsize_ratio=calcUpsizeDrvr(drvr_path, i, &expanded,upsize_target);
         if(upsize_ratio>0)ratio_delays.emplace_back(pair<int, LibertyCell*>(i,upsize_target),upsize_ratio);
-        std::cout<<"ratio "<<i<<' '<<upsize_ratio<<std::endl;
       }
     }
 
@@ -1309,7 +1307,6 @@ double RepairSetup::calcUpsizeCell(LibertyPort* in_port,
         = resizer_->gateDelay(drvr_port, load_cap, resizer_->tgt_slew_dcalc_ap_)
           + prev_drive * in_port->cornerPort(lib_ap)->capacitance();
     float cell_leakage=estimateLeakagePower(cell);
-    std::cout<<"gate_delay "<<cell->name()<<' '<<(resizer_->gateDelay(drvr_port, load_cap, resizer_->tgt_slew_dcalc_ap_))<<' '<<(prev_drive * in_port->cornerPort(lib_ap)->capacitance())<<' '<<cell_leakage<<std::endl;
     float current_delay=delay;
     float current_ratio=0;
     LibertyCell* current_swappable=cell;
@@ -1327,7 +1324,6 @@ double RepairSetup::calcUpsizeCell(LibertyPort* in_port,
       if (!resizer_->dontUse(swappable)
           && swappable_delay < current_delay) {
         float swappable_leakage=estimateLeakagePower(swappable);
-        std::cout<<"swap "<<swappable->name()<<' '<<(resizer_->gateDelay(swappable_drvr, load_cap, dcalc_ap))<<' '<<(prev_drive * swappable_input->capacitance())<<' '<<swappable_leakage<<std::endl;
         float swappable_ratio=(current_delay - swappable_delay)/(swappable_leakage-cell_leakage);
         if(swappable_ratio>current_ratio)
         {
