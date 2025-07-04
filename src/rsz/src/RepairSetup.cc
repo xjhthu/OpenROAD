@@ -24,6 +24,7 @@
 #include "sta/Parasitics.hh"
 #include "sta/PathExpanded.hh"
 #include "sta/PortDirection.hh"
+#include "sta/PowerClass.hh"
 #include "sta/Sdc.hh"
 #include "sta/TimingArc.hh"
 #include "sta/Units.hh"
@@ -1221,7 +1222,7 @@ double RepairSetup::calcUpsizeDrvr(const Path* drvr_path,
       prev_drive = 0.0;
     }
     LibertyPort* drvr_port = network_->libertyPort(drvr_pin);
-    double upsize_ratio = calcUpsizeCell(in_port, drvr_port, load_cap, prev_drive, dcalc_ap, upsize);
+    double upsize_ratio = calcUpsizeCell(in_port, drvr_port, load_cap, prev_drive, dcalc_ap, upsize,drvr);
     return upsize_ratio;
   }
   return -1;
@@ -1286,6 +1287,10 @@ float RepairSetup::estimateLeakagePower(LibertyCell* cell)
     cnt++;
     leakage += leak->power();
   }
+    float cell_leakage=0;
+    bool cell_leakage_exists;
+    cell->leakagePower(cell_leakage, cell_leakage_exists);
+    // std::cout<<"leakage "<<(cell->name())<<' '<<cell_leakage<<" "<<cell_leakage_exists<<std::endl;
   return leakage/cnt;
 }
 
@@ -1294,7 +1299,8 @@ double RepairSetup::calcUpsizeCell(LibertyPort* in_port,
                           float load_cap,
                           float prev_drive,
                           const DcalcAnalysisPt* dcalc_ap,
-                          LibertyCell* &upsizeTarget)
+                          LibertyCell* &upsizeTarget,
+                          Instance* drvr)
 {
   const int lib_ap = dcalc_ap->libertyIndex();
   LibertyCell* cell = drvr_port->libertyCell();
@@ -1306,7 +1312,9 @@ double RepairSetup::calcUpsizeCell(LibertyPort* in_port,
     const float delay
         = resizer_->gateDelay(drvr_port, load_cap, resizer_->tgt_slew_dcalc_ap_)
           + prev_drive * in_port->cornerPort(lib_ap)->capacitance();
-    float cell_leakage=estimateLeakagePower(cell);
+    float cell_leakage=sta_->estimatePower(drvr, cell,nullptr);
+    // float cell_leakage=estimateLeakagePower(cell);
+    // std::cout<<"estimate power "<<(cell->name())<<' '<<cell_leakage<<' '<<real_leakage<<std::endl;
     float current_delay=delay;
     float current_ratio=0;
     LibertyCell* current_swappable=cell;
@@ -1323,7 +1331,8 @@ double RepairSetup::calcUpsizeCell(LibertyPort* in_port,
             + prev_drive * swappable_input->capacitance();
       if (!resizer_->dontUse(swappable)
           && swappable_delay < current_delay) {
-        float swappable_leakage=estimateLeakagePower(swappable);
+        // float swappable_leakage=estimateLeakagePower(swappable);
+        float swappable_leakage=sta_->estimatePower(drvr,swappable,nullptr);
         float swappable_ratio=(current_delay - swappable_delay)/(swappable_leakage-cell_leakage);
         if(swappable_ratio>current_ratio)
         {

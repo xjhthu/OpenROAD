@@ -177,7 +177,8 @@ class RepairSetup : public sta::dbStaState
                           float load_cap,
                           float prev_drive,
                           const DcalcAnalysisPt* dcalc_ap,
-                          LibertyCell* &upsizeTarget);
+                          LibertyCell* &upsizeTarget,
+                          Instance* ins);
   LibertyCell* upsizeCell(LibertyPort* in_port,
                           LibertyPort* drvr_port,
                           float load_cap,
