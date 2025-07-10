@@ -13,10 +13,12 @@
 #include <iostream>
 
 #include "rsz/Resizer.hh"
+#include "sta/Bfs.hh"
 #include "sta/Corner.hh"
 #include "sta/DcalcAnalysisPt.hh"
 #include "sta/Fuzzy.hh"
 #include "sta/Graph.hh"
+#include "sta/GraphClass.hh"
 #include "sta/GraphDelayCalc.hh"
 #include "sta/InputDrive.hh"
 #include "sta/Liberty.hh"
@@ -26,6 +28,8 @@
 #include "sta/PortDirection.hh"
 #include "sta/PowerClass.hh"
 #include "sta/Sdc.hh"
+#include "sta/Search.hh"
+#include "sta/SearchPred.hh"
 #include "sta/TimingArc.hh"
 #include "sta/Units.hh"
 #include "sta/VerilogWriter.hh"
@@ -51,6 +55,28 @@ using sta::PathExpanded;
 using sta::Slew;
 using sta::VertexOutEdgeIterator;
 
+using sta::ArcDcalcResult;
+using sta::ArcDelayCalc;
+using sta::BfsBkwdIterator;
+using sta::BfsFwdIterator;
+using sta::BfsIndex;
+using sta::ClkArrivalSearchPred;
+using sta::Clock;
+using sta::Corners;
+using sta::Edge;
+using sta::fuzzyGreaterEqual;
+using sta::INF;
+using sta::InputDrive;
+using sta::LoadPinIndexMap;
+using sta::PinConnectedPinIterator;
+using sta::Sdc;
+using sta::SearchPredNonReg2;
+using sta::VertexIterator;
+using sta::VertexInEdgeIterator;
+
+using sta::TimingArcSet;
+using sta::TimingRole;
+
 RepairSetup::RepairSetup(Resizer* resizer) : resizer_(resizer)
 {
 }
@@ -63,69 +89,204 @@ void RepairSetup::init()
   initial_design_area_ = resizer_->computeDesignArea();
 }
 
+bool RepairSetup::isRegOutput(Vertex* vertex)
+{
+  LibertyPort* port = network_->libertyPort(vertex->pin());
+  if (port) {
+    LibertyCell* cell = port->libertyCell();
+    for (TimingArcSet* arc_set : cell->timingArcSets(nullptr, port)) {
+      if (arc_set->role()->genericRole() == TimingRole::regClkToQ()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void RepairSetup::dpPath(vector<pair<pair<Vertex*, LibertyCell*>, double>> &ratio_delays)
+{
+  sta_->ensureLevelized();
+  graph_ = sta_->graph();
+
+  sta_->checkCapacitanceLimitPreamble();
+  sta_->checkFanoutLimitPreamble();
+  
+  //bkwd: num of critical path, temporarily omit forward dp
+  //calcUpsizeDrvr(drvr_path, i, &expanded,upsize_target): find a best target gate, calculate the (slack reduction)/(extra leakage)
+  VertexSet ends = *(sta_->endpoints());
+  sta::SearchPredNonReg2 pred(sta_);
+  BfsBkwdIterator iter(BfsIndex::other, &pred, sta_);
+  std::unordered_map<Vertex*, int>bkwd;
+  for (Vertex* vertex : ends) {
+    if(pred.searchTo(vertex))
+    {
+      iter.enqueue(vertex);
+      bkwd[vertex]=1;
+    }
+  }
+
+  while (iter.hasNext()) {
+    Vertex* vertex = iter.next();
+    // std::cout<<"0"<<' '<<(vertex->name(network_))<<std::endl;
+    if(bkwd.find(vertex)==bkwd.end())bkwd[vertex]=0;
+    if((sta_->vertexSlack(vertex, max_))>=0)
+    {
+      bkwd[vertex]=0;
+    }
+    else
+    {
+      Path* end_path = sta_->vertexWorstSlackPath(vertex, max_);
+      PathExpanded expanded(end_path, sta_);
+      if (expanded.size() > 1)
+      {
+        const Pin* path_pin = vertex->pin();
+        if (network_->isDriver(path_pin)
+            && !network_->isTopLevelPort(path_pin)) {
+          int i=expanded.size()-1;
+          const Path* drvr_path = expanded.path(i);
+          LibertyCell* upsize_target;
+          double upsize_ratio=calcUpsizeDrvr(drvr_path, i, &expanded,upsize_target);
+          if(upsize_ratio>0)ratio_delays.emplace_back(pair<Vertex*, LibertyCell*>(vertex,upsize_target),upsize_ratio*bkwd[vertex]);
+        }
+      }
+    }
+    if (isRegOutput(vertex) || network_->isTopLevelPort(vertex->pin())) {
+      continue;
+    }
+    if (pred.searchTo(vertex)) {
+      VertexInEdgeIterator edge_iter(vertex, graph_);
+      while (edge_iter.hasNext()) {
+        Edge *edge = edge_iter.next();
+        Vertex *from_vertex = edge->from(graph_);
+        if (from_vertex->level() >= iter.level_max_
+          && pred.searchFrom(from_vertex)
+          && pred.searchThru(edge))
+        {
+          iter.enqueue(from_vertex);
+          if(bkwd.find(from_vertex)==bkwd.end())
+          {
+            bkwd[from_vertex]=bkwd[vertex];
+          }
+          else
+          {
+            bkwd[from_vertex]+=bkwd[vertex];
+          }
+          // std::cout<<(vertex->name(network_))<<' '<<bkwd[vertex]<<' '<<(from_vertex->name(network_))<<' '<<bkwd[from_vertex]<<std::endl;
+        }
+      }
+    }
+  }
+}
+
 bool RepairSetup::simpleSizing(const double repair_tns_end_percent,
                                const int max_passes)
 {
-  std::cerr<<"simpleSizing "<<repair_tns_end_percent<<' '<<max_passes<<std::endl;
   //init
   dbStaState::init(resizer_->sta_);
   db_network_ = resizer_->db_network_;
-  initial_design_area_ = resizer_->computeDesignArea();
 
-  //sort paths
-  const VertexSet* endpoints = sta_->endpoints();
-  vector<pair<Vertex*, Slack>> violating_ends;
-  float current_max_slack=1e9;
-  for (Vertex* end : *endpoints) {
-    const Slack end_slack = sta_->vertexSlack(end, max_);
-    violating_ends.emplace_back(end, end_slack);
-    if (end_slack < current_max_slack) {
-      current_max_slack=end_slack;
+  //dp, the current ratio_delay is (slack reduction)/(extra leakage)*(num of critical path)  
+  vector<pair<pair<Vertex*, LibertyCell*>, double>> ratio_delays;
+
+  dpPath(ratio_delays);
+
+  sort(
+      ratio_delays.begin(),
+      ratio_delays.end(),
+      [](pair<pair<Vertex*, LibertyCell*>, double> pair1, pair<pair<Vertex*, LibertyCell*>, double> pair2) {
+        return pair1.second > pair2.second
+                || (pair1.second == pair2.second && pair1.first.first > pair2.first.first);
+      });
+
+  //sort gates in the order of ratio_delays
+  int repairs_per_pass = floor(ratio_delays.size()*0.05);//xjh:TODO:change percentage
+  // repairs_per_pass=1;
+  std::cout<<"repairs_per_pass "<<repairs_per_pass<<std::endl;
+  int changed=0;
+
+  //simply upsize some gates
+  for (const auto& [entry, ignored] : ratio_delays){
+    if(changed>=repairs_per_pass)break;
+    Vertex* vertex=entry.first;
+    LibertyCell* upsize_target=entry.second;
+    Pin* drvr_pin = vertex->pin();
+    Instance* drvr = network_->instance(drvr_pin);
+          LibertyPort* drvr_port = network_->libertyPort(drvr_pin);
+          LibertyCell* cell = drvr_port->libertyCell();
+          std::cout<<"changed "<<(vertex->name(network_))<<' '<<(cell->name())<<' '<<(upsize_target->name())<<std::endl;
+    if (!resizer_->dontTouch(drvr)
+        && resizer_->replaceCell(drvr, upsize_target, true)) {
+      changed++;
     }
   }
-  std::stable_sort(violating_ends.begin(),
-                   violating_ends.end(),
-                   [](const auto& end_slack1, const auto& end_slack2) {
-                     return end_slack1.second < end_slack2.second;
-                   });
-  
-  //for each path
-  int end_index = 0;
-  int max_end_count = violating_ends.size() * 0.1;//xjh:TODO:change percentage
-    // Ensure that max cap and max fanout violations don't get worse
-    // xjh: not sure how does this function
-    sta_->checkCapacitanceLimitPreamble();
-    sta_->checkFanoutLimitPreamble();
-  int upsized=0;
-  for (const auto& end_original_slack : violating_ends){
-    end_index++;
-    if (end_index > max_end_count) {
-      break;
-    }
-    Vertex* end = end_original_slack.first;
-    Slack end_slack = sta_->vertexSlack(end, max_);
-    Slack worst_slack;
-    Vertex* worst_vertex;
-    sta_->worstSlack(max_, worst_slack, worst_vertex);
-    // Slack prev_end_slack = end_slack;
-    // Slack prev_worst_slack = worst_slack;
+  std::cout<<"changed "<<changed<<std::endl;
 
-    int pass = 0;
-    // int decreasing_slack_passes = 0;
-    resizer_->journalBegin();
-    while (pass <= max_passes){
-      Path* end_path = sta_->vertexWorstSlackPath(end, max_);
-
-      const bool changed = simpleRepairPath(end_path,
-                                      end_slack);
-      if(changed)upsized=1;
-      resizer_->journalEnd();
-      break;
-    }
-  }
-  std::cerr<<"simpleSizing "<<upsized<<std::endl;
-  return upsized;
+  return 1;
 }
+
+// bool RepairSetup::simpleSizing(const double repair_tns_end_percent,
+//                                const int max_passes)
+// {
+//   std::cerr<<"simpleSizing "<<repair_tns_end_percent<<' '<<max_passes<<std::endl;
+//   //init
+//   dbStaState::init(resizer_->sta_);
+//   db_network_ = resizer_->db_network_;
+//   initial_design_area_ = resizer_->computeDesignArea();
+
+//   //sort paths
+//   const VertexSet* endpoints = sta_->endpoints();
+//   vector<pair<Vertex*, Slack>> violating_ends;
+//   float current_max_slack=1e9;
+//   for (Vertex* end : *endpoints) {
+//     const Slack end_slack = sta_->vertexSlack(end, max_);
+//     violating_ends.emplace_back(end, end_slack);
+//     if (end_slack < current_max_slack) {
+//       current_max_slack=end_slack;
+//     }
+//   }
+//   std::stable_sort(violating_ends.begin(),
+//                    violating_ends.end(),
+//                    [](const auto& end_slack1, const auto& end_slack2) {
+//                      return end_slack1.second < end_slack2.second;
+//                    });
+  
+//   //for each path
+//   int end_index = 0;
+//   int max_end_count = violating_ends.size() * 0.1;//xjh:TODO:change percentage
+//     // Ensure that max cap and max fanout violations don't get worse
+//     // xjh: not sure how does this function
+//     sta_->checkCapacitanceLimitPreamble();
+//     sta_->checkFanoutLimitPreamble();
+//   int upsized=0;
+//   for (const auto& end_original_slack : violating_ends){
+//     end_index++;
+//     if (end_index > max_end_count) {
+//       break;
+//     }
+//     Vertex* end = end_original_slack.first;
+//     Slack end_slack = sta_->vertexSlack(end, max_);
+//     Slack worst_slack;
+//     Vertex* worst_vertex;
+//     sta_->worstSlack(max_, worst_slack, worst_vertex);
+//     // Slack prev_end_slack = end_slack;
+//     // Slack prev_worst_slack = worst_slack;
+
+//     int pass = 0;
+//     // int decreasing_slack_passes = 0;
+//     resizer_->journalBegin();
+//     while (pass <= max_passes){
+//       Path* end_path = sta_->vertexWorstSlackPath(end, max_);
+
+//       const bool changed = simpleRepairPath(end_path,
+//                                       end_slack);
+//       if(changed)upsized=1;
+//       resizer_->journalEnd();
+//       break;
+//     }
+//   }
+//   std::cerr<<"simpleSizing "<<upsized<<std::endl;
+//   return upsized;
+// }
 
 bool RepairSetup::repairSetup(const float setup_slack_margin,
                               const double repair_tns_end_percent,
@@ -535,7 +696,7 @@ bool RepairSetup::simpleRepairPath(Path* path,
     const int path_length = expanded.size();
     vector<pair<pair<int, LibertyCell*>, double>> ratio_delays;
     const int start_index = expanded.startIndex();
-    const DcalcAnalysisPt* dcalc_ap = path->dcalcAnalysisPt(sta_);
+    // const DcalcAnalysisPt* dcalc_ap = path->dcalcAnalysisPt(sta_);
     // const int lib_ap = dcalc_ap->libertyIndex();
     for (int i = start_index; i < path_length; i++) {
       const Path* path = expanded.path(i);
@@ -1319,6 +1480,8 @@ double RepairSetup::calcUpsizeCell(LibertyPort* in_port,
     float current_ratio=0;
     LibertyCell* current_swappable=cell;
     for (LibertyCell* swappable : swappable_cells) {
+      // string swappable_name=swappable->name();
+      // if(swappable_name.find("x1_")==std::string::npos)continue;
       LibertyCell* swappable_corner = swappable->cornerCell(lib_ap);
       LibertyPort* swappable_drvr
           = swappable_corner->findLibertyPort(drvr_port_name);
@@ -1334,6 +1497,7 @@ double RepairSetup::calcUpsizeCell(LibertyPort* in_port,
         // float swappable_leakage=estimateLeakagePower(swappable);
         float swappable_leakage=sta_->estimatePower(drvr,swappable,nullptr);
         float swappable_ratio=(current_delay - swappable_delay)/(swappable_leakage-cell_leakage);
+        std::cout<<(cell->name())<<' '<<cell_leakage<<' '<<current_delay<<' '<<(swappable->name())<<' '<<swappable_leakage<<' '<<swappable_delay<<std::endl;
         if(swappable_ratio>current_ratio)
         {
           current_swappable=swappable;

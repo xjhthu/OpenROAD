@@ -102,6 +102,8 @@ class RepairSetup : public sta::dbStaState
                    bool skip_buffering,
                    bool skip_buffer_removal,
                    bool skip_last_gasp);
+  bool isRegOutput(Vertex* vertex);
+  void dpPath(vector<pair<pair<Vertex*, LibertyCell*>, double>> &ratio_delays);
   bool simpleSizing(const double repair_tns_end_percent,
                     const int max_passes);
   // For testing.
